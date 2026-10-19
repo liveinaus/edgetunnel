@@ -130,6 +130,27 @@
 | **PRELOAD_RACE_DIAL** | ❌ | `1`或`true` | 默认**关闭**作为**预加载竞速拨号**的功能，设置`1`或`true`则**开启**该功能 |
 | **TCP_CONCURRENT_DIAL**   | ❌ | `2` | **TCP 并发拨号数**，默认值为`2`；设置后不再根据中国移动网络自动降为单路 |
 | **PROXY_CONCURRENT_DIAL** | ❌ | `1` | **反代并发拨号数**，默认值为`1`；数值越高连接速度越快，但 IP 切换也越频繁 |
+| **REGIONS** | ❌ | `JP\|socks5://user:pass@1.2.3.4:1080` | Exit regions, one `label\|exit` per line. See below |
+
+### Exit regions (REGIONS)
+
+Lets each node pick where its traffic leaves from. One `label|exit` per line; repeat a label to pool several exits in that region:
+
+```
+JP|socks5://user:pass@203.0.113.10:1080
+JP|socks5://user:pass@203.0.113.11:1080
+US|http=user:pass@198.51.100.20:8080
+SG|proxyip.sg.example.net:443
+```
+
+- An exit is any proxy segment the worker already understands (`socks5://`, `socks5=`, `gs5=`, `http=`, `https=`, `turn=`, `sstp=`). Anything else is a ProxyIP host.
+- `/region=jp` in the node path sends all traffic through the JP pool. Each site sticks to one exit (rendezvous hashing on the site's root domain); if that exit fails within 5 s the next one takes over, and a failed exit sits at the back for 60 s.
+- `/region=jp.2` prefers JP exit 2 and only falls back to the others when it fails, so different nodes get different, stable IPs.
+- A ProxyIP-only region merges its hosts into one ProxyIP list. ProxyIP only changes the exit for sites behind Cloudflare; use SOCKS5/HTTP exits to choose the exit for everything.
+- Subscription:
+  - default: adds a `[JP] ...` node per preferred IP for every region
+  - `&region=jp,us`: only those regions
+  - `&per_exit=1`: one node per exit (`JP-1`, `JP-2`, `US-1`, ...) using the worker's own domain as entry, so nodes stay identical between refreshes. This is the form to import into Bemby as a subscription provider.
 
 ---
 
