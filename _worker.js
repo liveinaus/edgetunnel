@@ -55,7 +55,7 @@ const 主程序 = {
 		} else SOCKS5白名单 = 缓存SOCKS5白名单;
 		出口地区表 = 解析出口地区(env.REGIONS);
 		if (管理员密码 && (upgradeHeader === 'websocket' || request.method === 'POST')) {
-			const CF出口响应 = 转交CF出口(request, url, env);
+			const CF出口响应 = await 转交CF出口(request, url, env);
 			if (CF出口响应) return CF出口响应;
 		}
 		if (访问路径 === 'version') {// 版本信息接口
@@ -412,7 +412,23 @@ const 主程序 = {
 							const 按出口订阅 = ['1', 'true'].includes(url.searchParams.get('per_exit'));
 							// The worker's own domain as entry keeps each node identical between refreshes
 							const 下个入口 = () => `${host}:443`;
-							const 订阅节点列表 = 按出口订阅
+							// country=sg,jp: one node per Cloudflare exit found in each country
+							const 订阅国家 = 按出口订阅 ? (url.searchParams.get('country') || '').toLowerCase().split(',').map(s => s.trim()).filter(s => /^[a-z]{2}$/.test(s)) : [];
+							const 国家节点 = [];
+							if (订阅国家.length) {
+								const 数量 = Math.min(10, Math.max(1, Number(url.searchParams.get('count')) || 3));
+								// ips: how many exits stand behind each node, taking over from one another
+								const 每节点 = Math.min(5, Math.max(1, Number(url.searchParams.get('ips')) || 1));
+								const 未找到 = [];
+								for (const 国家 of 订阅国家) {
+									const 出口 = await 国家出口(env, 国家, 数量 * 每节点);
+									const 节点数 = Math.min(数量, Math.floor(出口.length / 每节点));
+									if (!节点数) 未找到.push(国家.toUpperCase());
+									国家节点.push(...Array.from({ length: 节点数 }, (_, i) => [下个入口(), null, `${国家.toUpperCase()}-${i + 1}`, `country=${国家}.${i + 1}` + (每节点 > 1 ? `x${每节点}` : '')]));
+								}
+								if (!国家节点.length) return new Response(`No Cloudflare exit found in ${未找到.join(', ')} yet; retry to keep searching. Seen so far: ${Object.keys(国家位置提示).join(', ').toUpperCase()}`, { status: 503, headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
+							}
+							const 订阅节点列表 = 订阅国家.length ? 国家节点 : 按出口订阅
 								? 订阅地区.flatMap(地区 => {
 									const 出口数 = 出口地区表.get(地区).代理.length || 出口地区表.get(地区).CF位置.length;
 									return 出口数
@@ -423,7 +439,7 @@ const 主程序 = {
 									...(订阅地区参数 && 订阅地区.length ? [] : 完整优选IP.map(地址 => [地址, null, null])),
 									...订阅地区.flatMap(地区 => 完整优选IP.map(地址 => [地址, 地区, null])),
 								];
-							订阅内容 = (按出口订阅 ? '' : 其他节点LINK) + 订阅节点列表.map(([原始地址, 地区, 固定备注]) => {
+							订阅内容 = (按出口订阅 ? '' : 其他节点LINK) + 订阅节点列表.map(([原始地址, 地区, 固定备注, 路径段]) => {
 								// 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
 								// 示例:
 								//   - 域名: hj.xmm1993.top:2096#备注 或 example.com
@@ -447,7 +463,10 @@ const 主程序 = {
 								let 完整节点路径 = config_JSON.完整节点路径;
 
 								const 链式代理匹配 = 节点备注.match(/\$(socks5|http|https|turn|sstp):\/\/([^#\s]+)/i);
-								if (地区) {
+								if (路径段) {
+									完整节点路径 = (`${config_JSON.PATH}/${路径段}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
+									节点备注 = 固定备注;
+								} else if (地区) {
 									完整节点路径 = (`${config_JSON.PATH}/region=${地区}`).replace(/\/\//g, '/') + (config_JSON.启用0RTT ? '?ed=2560' : '');
 									节点备注 = 固定备注 || `[${地区.toUpperCase()}] ` + (链式代理匹配 ? 节点备注.replace(链式代理匹配[0], '').trim() || 节点地址 : 节点备注);
 								} else if (链式代理匹配) {
@@ -561,14 +580,108 @@ export class EXIT {
 		this.state = state;
 		this.env = env;
 	}
-	fetch(request) {
+	async fetch(request) {
+		if (request.headers.get('x-edt-exit-where')) return new Response(await 出口国家(request));
 		return 主程序.fetch(request, this.env, this.state);
 	}
 }
 
+// The country sites see for this isolate's outbound connections, by the same connect() the tunnel uses
+async function 出口国家(request) {
+	try {
+		const 套接字 = 创建请求TCP连接器(request)({ hostname: 'ip-api.com', port: 80 });
+		const 写入器 = 套接字.writable.getWriter();
+		await 写入器.write(new TextEncoder().encode('GET /line/?fields=countryCode HTTP/1.0\r\nHost: ip-api.com\r\n\r\n'));
+		let 响应 = '';
+		const 读取器 = 套接字.readable.getReader();
+		for (; ;) {
+			const { value, done } = await 读取器.read();
+			if (done) break;
+			响应 += new TextDecoder().decode(value);
+		}
+		const 国家 = 响应.slice(响应.indexOf('\r\n\r\n') + 4).trim().toLowerCase();
+		if (/^[a-z]{2}$/.test(国家)) return 国家;
+	} catch (e) { }
+	// Cloudflare's own view of the location, when the lookup above is unavailable
+	const 跟踪 = await (await fetch('https://www.cloudflare.com/cdn-cgi/trace')).text();
+	return ((跟踪.match(/^loc=(.+)$/m) || [])[1] || '').trim().toLowerCase();
+}
+
+// Location hints that have placed objects in each country (measured); others try every hint
+const 国家位置提示 = {
+	us: ['wnam', 'enam'],
+	gb: ['weur', 'afr'], fr: ['weur', 'afr'], nl: ['weur', 'afr'], es: ['weur', 'afr'], pt: ['afr', 'weur'],
+	de: ['eeur', 'me'], at: ['eeur', 'me'], cz: ['eeur', 'me'], it: ['eeur', 'me'], pl: ['eeur', 'me'], ro: ['eeur', 'me'], se: ['me', 'eeur'],
+	sg: ['apac-se', 'apac'], hk: ['apac-se', 'apac'], jp: ['apac-ne', 'apac'], kr: ['apac-ne', 'apac'],
+	au: ['oc'],
+};
+const 全部位置提示 = ['wnam', 'enam', 'weur', 'eeur', 'apac', 'apac-ne', 'apac-se', 'oc', 'afr', 'me'];
+const 国家出口缓存 = new Map();
+
+// Names of EXIT objects known to sit in a country, searching for more until there are enough.
+// An object stays where it was first created, so a found one is kept in KV and reused.
+async function 国家出口(env, 国家, 数量 = 0) {
+	if (!env.EXIT) return [];
+	let 已知 = 国家出口缓存.get(国家);
+	if (!已知) {
+		try { 已知 = JSON.parse(await env.KV?.get(`cf-exit:${国家}`) || '[]') } catch (e) { 已知 = [] }
+		国家出口缓存.set(国家, 已知);
+	}
+	if (已知.length >= 数量) return 已知;
+	const 提示表 = 国家位置提示[国家] || 全部位置提示;
+	// Each probe is a subrequest; this stays well under a request's limit, and a later request carries on
+	const 预算 = 国家位置提示[国家] ? 30 : 20;
+	for (let 已试 = 0; 已知.length < 数量 && 已试 < 预算;) {
+		const 批 = Array.from({ length: Math.min(10, 预算 - 已试) }, (_, i) => {
+			const 提示 = 提示表[(已试 + i) % 提示表.length];
+			return { 名: `${提示}:${crypto.randomUUID().slice(0, 8)}`, 提示 };
+		});
+		已试 += 批.length;
+		const 结果 = await Promise.all(批.map(async c => {
+			try {
+				const 响应 = await env.EXIT.get(env.EXIT.idFromName(c.名), { locationHint: c.提示 }).fetch('https://exit/', { headers: { 'x-edt-exit-where': '1' } });
+				return (await 响应.text()) === 国家 ? c.名 : null;
+			} catch (e) { return null }
+		}));
+		for (const 名 of 结果) if (名 && 已知.length < 数量) 已知.push(名);
+	}
+	if (env.KV) await env.KV.put(`cf-exit:${国家}`, JSON.stringify(已知));
+	log(`[出口国家] ${国家} => ${已知.length} 个`);
+	return 已知;
+}
+
 // Hands a request for a region served by Cloudflare locations ("label|do=wnam") to an EXIT object placed there
-function 转交CF出口(request, url, env) {
+async function 转交CF出口(request, url, env) {
 	if (!env.EXIT || request.headers.get('x-edt-cf-exit')) return null;
+	// "/country=sg.2x3": node 2 of Singapore, backed by 3 exits that take over from one another
+	const 国家匹配 = /\/country=([a-z]{2})(?:\.(\d+))?(?:x(\d+))?/i.exec(url.pathname);
+	if (国家匹配) {
+		const 出口 = await 国家出口(env, 国家匹配[1].toLowerCase());
+		if (!出口.length) return new Response('No Cloudflare exit known for this country', { status: 503 });
+		const 序号 = Number(国家匹配[2]) - 1, 每节点 = Math.max(1, Number(国家匹配[3]) || 1);
+		let 组 = 序号 >= 0 ? 出口.slice(序号 * 每节点, (序号 + 1) * 每节点) : [];
+		if (!组.length) 组 = [出口[Math.floor(Math.random() * 出口.length)]];
+		const 新URL = new URL(url);
+		新URL.pathname = url.pathname.replace(国家匹配[0], '') || '/';
+		// A body can only be sent once, so only a WebSocket upgrade moves on to the next exit
+		const 可重试 = request.method === 'GET';
+		for (let i = 0; i < 组.length; i++) {
+			const 最后 = i === 组.length - 1 || !可重试;
+			const 转交请求 = new Request(新URL, request);
+			转交请求.headers.set('x-edt-cf-exit', 组[i]);
+			try {
+				const 响应 = await env.EXIT.get(env.EXIT.idFromName(组[i])).fetch(转交请求);
+				if (响应.status === 101 || 最后) {
+					log(`[出口国家] ${国家匹配[1]} => ${组[i]}`);
+					return 响应;
+				}
+				log(`[出口国家] ${组[i]} 返回 ${响应.status}，换下一个`);
+			} catch (e) {
+				if (最后) throw e;
+				log(`[出口国家] ${组[i]} 失败: ${e?.message || e}，换下一个`);
+			}
+		}
+	}
 	const 匹配 = /\/region=([a-z0-9_-]+)(?:\.(\d+))?/i.exec(url.pathname);
 	const 地区 = 匹配 && 出口地区表.get(匹配[1].toLowerCase());
 	if (!地区?.CF位置.length) return null;

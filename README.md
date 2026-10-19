@@ -147,6 +147,10 @@ SG|proxyip.sg.example.net:443
 - `/region=jp` in the node path sends all traffic through the JP pool. Each site sticks to one exit (rendezvous hashing on the site's root domain); if that exit fails within 5 s the next one takes over, and a failed exit sits at the back for 60 s.
 - `/region=jp.2` prefers JP exit 2 and only falls back to the others when it fails, so different nodes get different, stable IPs.
 - `do=<hint>` exits from Cloudflare's own IPs in that location, e.g. `SG|do=apac-se`. The worker hands the connection to a Durable Object placed with that location hint, so it needs the `EXIT` binding (see `wrangler.toml`). Hints: `wnam`, `enam`, `weur`, `eeur`, `apac`, `apac-ne` (JP), `apac-se` (SG), `oc`. Placement is best effort, and a Cloudflare-hosted site cannot be reached directly, so add a `label|proxyip` line to the region if those sites matter. `EXIT_SHARDS` (default 4) spreads tunnels over that many objects per hint.
+- `/sub?...&per_exit=1&country=sg` (or `country=sg,jp,hk`) needs no REGIONS at all: it returns nodes `SG-1`, `SG-2`, ... that exit from Cloudflare's IPs in that country. The worker creates EXIT objects under the location hints that reach the country, keeps the ones that land there, and stores them in KV (`cf-exit:<country>`), so the first request for a country takes a few seconds and later ones are instant.
+  - `count=3` (1-10): nodes per country.
+  - `ips=2` (1-5): exits behind each node; when one does not answer, the next takes over.
+  - Countries seen so far: US, GB, FR, NL, ES, PT, DE, AT, CZ, IT, PL, RO, SE, SG, HK, JP, KR, AU. One with no Cloudflare exit (TW, for instance) answers 503. A rarer country can come back short of `count`; requesting the subscription again carries the search on.
 - A ProxyIP-only region merges its hosts into one ProxyIP list. ProxyIP only changes the exit for sites behind Cloudflare; use SOCKS5/HTTP exits to choose the exit for everything.
 - Subscription:
   - default: adds a `[JP] ...` node per preferred IP for every region
