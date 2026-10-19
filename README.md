@@ -151,6 +151,7 @@ SG|proxyip.sg.example.net:443
   - default: adds a `[JP] ...` node per preferred IP for every region
   - `&region=jp,us`: only those regions
   - `&per_exit=1`: one node per exit (`JP-1`, `JP-2`, `US-1`, ...) using the worker's own domain as entry, so nodes stay identical between refreshes. This is the form to import into Bemby as a subscription provider.
+- Deploying with wrangler: use `wrangler deploy --no-bundle`. Bundling strips the trailing comment block in `_worker.js`, and a worker uploaded without it answered every request with error 1101 (it stayed broken after a later `--no-bundle` deploy under the same name).
 
 ---
 
