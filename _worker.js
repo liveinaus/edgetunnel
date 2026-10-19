@@ -15,7 +15,7 @@ const 特征码字典 = [
 ];
 const 汇聚订阅_UA = 'v2rayN/edge' + 'tunnel (https://github.com/' + 特征码字典[1] + '/edge' + 'tunnel)';
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////
-export default {
+const 主程序 = {
 	async fetch(request, env, ctx) {
 		let 请求URL文本 = request.url.replace(/%5[Cc]/g, '').replace(/\\/g, '');
 		const 请求URL锚点索引 = 请求URL文本.indexOf('#');
@@ -54,6 +54,10 @@ export default {
 			缓存SOCKS5白名单 = SOCKS5白名单;
 		} else SOCKS5白名单 = 缓存SOCKS5白名单;
 		出口地区表 = 解析出口地区(env.REGIONS);
+		if (管理员密码 && (upgradeHeader === 'websocket' || request.method === 'POST')) {
+			const CF出口响应 = 转交CF出口(request, url, env);
+			if (CF出口响应) return CF出口响应;
+		}
 		if (访问路径 === 'version') {// 版本信息接口
 			const 请求UUID = (url.searchParams.get('uuid') || '').toLowerCase();
 			if (uuidRegex.test(请求UUID)) {
@@ -410,7 +414,7 @@ export default {
 							const 下个入口 = () => `${host}:443`;
 							const 订阅节点列表 = 按出口订阅
 								? 订阅地区.flatMap(地区 => {
-									const 出口数 = 出口地区表.get(地区).代理.length;
+									const 出口数 = 出口地区表.get(地区).代理.length || 出口地区表.get(地区).CF位置.length;
 									return 出口数
 										? Array.from({ length: 出口数 }, (_, i) => [下个入口(), `${地区}.${i + 1}`, `${地区.toUpperCase()}-${i + 1}`])
 										: [[下个入口(), 地区, 地区.toUpperCase()]];
@@ -549,6 +553,38 @@ export default {
 		return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
 	}
 };
+export default 主程序;
+
+// A Durable Object placed by locationHint runs the tunnel there, so its connections leave from Cloudflare's IPs in that region
+export class EXIT {
+	constructor(state, env) {
+		this.state = state;
+		this.env = env;
+	}
+	fetch(request) {
+		return 主程序.fetch(request, this.env, this.state);
+	}
+}
+
+// Hands a request for a region served by Cloudflare locations ("label|do=wnam") to an EXIT object placed there
+function 转交CF出口(request, url, env) {
+	if (!env.EXIT || request.headers.get('x-edt-cf-exit')) return null;
+	const 匹配 = /\/region=([a-z0-9_-]+)(?:\.(\d+))?/i.exec(url.pathname);
+	const 地区 = 匹配 && 出口地区表.get(匹配[1].toLowerCase());
+	if (!地区?.CF位置.length) return null;
+	const 序号 = Number(匹配[2]) - 1;
+	const 提示 = 地区.CF位置[序号 >= 0 && 序号 < 地区.CF位置.length ? 序号 : Math.floor(Math.random() * 地区.CF位置.length)];
+	// Shards spread concurrent tunnels over several objects, each a single isolate
+	const 分片数 = Math.max(1, Number(env.EXIT_SHARDS) || 4);
+	const id = env.EXIT.idFromName(`${提示}:${Math.floor(Math.random() * 分片数)}`);
+	const 新URL = new URL(url);
+	// A Cloudflare-hosted target cannot be reached directly, so the region's ProxyIP (if any) rides along as the fallback
+	新URL.pathname = url.pathname.replace(匹配[0], 地区.反代IP.length ? '/proxyip=' + 地区.反代IP.join(',') : '') || '/';
+	const 转交请求 = new Request(新URL, request);
+	转交请求.headers.set('x-edt-cf-exit', 提示);
+	log(`[出口地区] ${匹配[1]} => Cloudflare ${提示}`);
+	return env.EXIT.get(id, { locationHint: 提示 }).fetch(转交请求);
+}
 ///////////////////////////////////////////////////////////////////////叉HTTP传输数据///////////////////////////////////////////////
 const HPACKHuffman码长 = [
 	13, 23, 28, 28, 28, 28, 28, 28, 28, 24, 30, 28, 28, 30, 28, 28,
@@ -6244,7 +6280,8 @@ async function 请求优选API(urls, 默认端口 = '443', uid = "000000", 超�
 }
 
 // REGIONS: one "label|exit" per line; repeat a label to pool several exits for that region.
-// An exit is a proxy path segment (socks5=, gs5=, http://, ...) or a ProxyIP host.
+// An exit is a proxy path segment (socks5=, gs5=, http://, ...), a ProxyIP host, or do=<location hint>
+// for a Cloudflare exit in that location (needs the EXIT Durable Object binding).
 function 解析出口地区(内容) {
 	const 表 = new Map();
 	for (const 行 of String(内容 || '').split(/[\r\n]+/)) {
@@ -6253,9 +6290,11 @@ function 解析出口地区(内容) {
 		const 代号 = 行.slice(0, 分隔).trim().toLowerCase();
 		const 出口 = 行.slice(分隔 + 1).trim().replace(/^\/+/, '');
 		if (!/^[a-z0-9_-]+$/.test(代号) || !出口) continue;
-		if (!表.has(代号)) 表.set(代号, { 代理: [], 反代IP: [] });
+		if (!表.has(代号)) 表.set(代号, { 代理: [], 反代IP: [], CF位置: [] });
 		const 地区 = 表.get(代号);
-		if (/^(g?s5|socks5?|g?https?|g?turn|g?sstp)(=|:\/\/)/i.test(出口)) 地区.代理.push(出口);
+		const CF位置 = /^(?:do|cf)=([a-z-]+)$/i.exec(出口);
+		if (CF位置) 地区.CF位置.push(CF位置[1].toLowerCase());
+		else if (/^(g?s5|socks5?|g?https?|g?turn|g?sstp)(=|:\/\/)/i.test(出口)) 地区.代理.push(出口);
 		else 地区.反代IP.push(...出口.replace(/^(proxyip|pyip|ip)=/i, '').split(',').map(s => s.trim()).filter(Boolean));
 	}
 	return 表;

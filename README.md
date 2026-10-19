@@ -146,6 +146,7 @@ SG|proxyip.sg.example.net:443
 - An exit is any proxy segment the worker already understands (`socks5://`, `socks5=`, `gs5=`, `http=`, `https=`, `turn=`, `sstp=`). Anything else is a ProxyIP host.
 - `/region=jp` in the node path sends all traffic through the JP pool. Each site sticks to one exit (rendezvous hashing on the site's root domain); if that exit fails within 5 s the next one takes over, and a failed exit sits at the back for 60 s.
 - `/region=jp.2` prefers JP exit 2 and only falls back to the others when it fails, so different nodes get different, stable IPs.
+- `do=<hint>` exits from Cloudflare's own IPs in that location, e.g. `SG|do=apac-se`. The worker hands the connection to a Durable Object placed with that location hint, so it needs the `EXIT` binding (see `wrangler.toml`). Hints: `wnam`, `enam`, `weur`, `eeur`, `apac`, `apac-ne` (JP), `apac-se` (SG), `oc`. Placement is best effort, and a Cloudflare-hosted site cannot be reached directly, so add a `label|proxyip` line to the region if those sites matter. `EXIT_SHARDS` (default 4) spreads tunnels over that many objects per hint.
 - A ProxyIP-only region merges its hosts into one ProxyIP list. ProxyIP only changes the exit for sites behind Cloudflare; use SOCKS5/HTTP exits to choose the exit for everything.
 - Subscription:
   - default: adds a `[JP] ...` node per preferred IP for every region
