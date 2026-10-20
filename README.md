@@ -130,6 +130,104 @@
 | **PRELOAD_RACE_DIAL** | ❌ | `1`或`true` | 默认**关闭**作为**预加载竞速拨号**的功能，设置`1`或`true`则**开启**该功能 |
 | **TCP_CONCURRENT_DIAL**   | ❌ | `2` | **TCP 并发拨号数**，默认值为`2`；设置后不再根据中国移动网络自动降为单路 |
 | **PROXY_CONCURRENT_DIAL** | ❌ | `1` | **反代并发拨号数**，默认值为`1`；数值越高连接速度越快，但 IP 切换也越频繁 |
+| **REGIONS** | ❌ | `JP\|socks5://user:pass@1.2.3.4:1080` | Exit regions, one `label\|exit` per line. See [Exit regions](#-exit-regions) |
+| **EXIT_SHARDS** | ❌ | `4` | EXIT objects per location hint for `do=` regions, default `4` |
+
+### 🌏 Exit regions
+
+Choose where each node's traffic leaves the internet from. There are three ways to do it, and you can mix them:
+
+| Mode | Config needed | Exit IPs come from | Covers |
+| :--- | :--- | :--- | :--- |
+| Country exits (`country=`) | `EXIT` binding, KV recommended | Cloudflare, in the chosen country | Sites not hosted on Cloudflare |
+| Proxy regions (`REGIONS` + SOCKS5/HTTP/...) | `REGIONS` | Your own proxies | All sites |
+| Cloudflare location regions (`REGIONS` + `do=`) | `REGIONS`, `EXIT` binding | Cloudflare, near a location hint | Sites not hosted on Cloudflare (add a ProxyIP for the rest) |
+
+#### Setup
+
+- **Deploy as a Worker, not Pages.** The `do=` and `country=` modes run the tunnel inside the `EXIT` Durable Object, which only a Worker can define. `wrangler.toml` already declares the binding and migration:
+  ```toml
+  [[durable_objects.bindings]]
+  name = "EXIT"
+  class_name = "EXIT"
+
+  [[migrations]]
+  tag = "v1"
+  new_sqlite_classes = ["EXIT"]
+  ```
+- **Deploy with `wrangler deploy --no-bundle`.** Bundling strips the trailing comment block in `_worker.js`, and a worker uploaded without it answered every request with error 1101 (it stayed broken after a later `--no-bundle` deploy under the same name).
+- **Bind KV** (`KV`) for country exits, so found exits survive cold starts and stay the same across isolates.
+- Proxy-only `REGIONS` need neither the binding nor KV and also work on Pages.
+
+#### 1. Country exits (no REGIONS needed)
+
+Add `per_exit=1&country=<code>` to your subscription URL:
+
+```
+https://your.domain/sub?token=<token>&per_exit=1&country=sg
+https://your.domain/sub?token=<token>&per_exit=1&country=sg,jp,hk&count=5&ips=2
+```
+
+It returns nodes named `SG-1`, `SG-2`, ... that exit from Cloudflare's IPs in that country.
+
+| Parameter | Default | Range | Meaning |
+| :--- | :---: | :---: | :--- |
+| `country` | | ISO 3166 two-letter codes, comma separated | Countries to build nodes for |
+| `count` | `3` | 1-10 | Nodes per country |
+| `ips` | `1` | 1-5 | Exits behind each node; if one does not answer, the next takes over |
+
+How it works: the worker creates EXIT objects under the location hints that reach the country, asks each one where its connections appear from, keeps the ones that land in the country, and saves them in KV under `cf-exit:<country>`. The first request for a country takes a few seconds; later ones are instant.
+
+- Countries found so far: US, GB, FR, NL, ES, PT, DE, AT, CZ, IT, PL, RO, SE, SG, HK, JP, KR, AU. Other codes try every hint.
+- A country with no Cloudflare exit (TW, for instance) answers `503`. A rarer country can come back short of `count`; requesting the subscription again carries the search on.
+- Each node's path is `/country=<code>.<n>` (or `.<n>x<ips>`), for example `/country=sg.2x3` is node 2 of Singapore backed by 3 exits. A plain `/country=sg` picks a random known exit.
+- Failover between `ips` exits only happens when the WebSocket upgrade fails; a POST-based transport stays on the first exit.
+
+#### 2. Proxy regions (REGIONS)
+
+Set `REGIONS` to one `label|exit` per line. Repeat a label to pool several exits in that region:
+
+```
+JP|socks5://user:pass@203.0.113.10:1080
+JP|socks5://user:pass@203.0.113.11:1080
+US|http=user:pass@198.51.100.20:8080
+SG|proxyip.sg.example.net:443
+```
+
+- Labels are case-insensitive and may contain `a-z`, `0-9`, `_` and `-`.
+- An exit is any proxy segment the worker already understands (`socks5://`, `socks5=`, `s5=`, `gs5=`, `http=`, `https=`, `turn=`, `sstp=`). Anything else is treated as a ProxyIP host (an optional `proxyip=` prefix and comma-separated hosts are accepted).
+- A proxy exit carries **all** traffic for that node. A ProxyIP-only region merges its hosts into one ProxyIP list, which only changes the exit for sites hosted on Cloudflare.
+- Node paths:
+  - `/region=jp`: use the whole JP pool. Each site sticks to one exit (rendezvous hashing on the site's root domain plus UUID), so adding or removing an exit only moves the sites that were on it. If the exit does not connect within 5 s the next one takes over, and a failed exit goes to the back of the queue for 60 s.
+  - `/region=jp.2`: prefer JP exit 2 and fall back to the others only when it fails, so different nodes keep different, stable IPs.
+  - An unknown label falls back to the normal exit.
+
+#### 3. Cloudflare location regions (`do=`)
+
+```
+SG|do=apac-se
+SG|proxyip.sg.example.net:443
+EU|do=weur
+EU|do=eeur
+```
+
+- `do=<hint>` (or `cf=<hint>`) hands the connection to an EXIT object created with that location hint, so it exits from Cloudflare's IPs near there. Hints: `wnam`, `enam`, `weur`, `eeur`, `apac`, `apac-ne` (JP/KR), `apac-se` (SG/HK), `oc`, `afr`, `me`.
+- Placement is best effort: a hint picks a broad area, not a country. Use country exits when the exact country matters.
+- A Cloudflare-hosted site cannot be reached from a Cloudflare IP directly, so add a `label|proxyip` line to the region if those sites matter; it is used as the fallback.
+- With several `do=` lines, `/region=eu.1` picks the first hint and `/region=eu` picks one at random.
+- `EXIT_SHARDS` (default `4`) spreads concurrent tunnels over that many objects per hint.
+
+#### Subscription parameters
+
+| Parameter | Effect |
+| :--- | :--- |
+| (none) | Normal nodes, plus a `[JP] ...` copy of each preferred IP for every region in `REGIONS` |
+| `region=jp,us` | Only the regions listed (normal nodes are left out) |
+| `per_exit=1` | One node per exit (`JP-1`, `JP-2`, `US-1`, ...) using the worker's own domain as entry, so nodes stay identical between refreshes. Use this form when a client pins nodes by name (for example as a Bemby subscription provider) |
+| `per_exit=1&country=sg` | Country exits, see above. Takes priority over `REGIONS` |
+
+`region=` is passed through to the subscription converter (Clash, sing-box, ...). `per_exit` and `country` only apply to the raw subscription, so import those as a v2rayN / mixed subscription.
+
 
 ---
 
