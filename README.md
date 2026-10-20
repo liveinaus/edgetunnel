@@ -11,6 +11,24 @@
 
 ---
 
+## 🔀 This fork vs upstream
+
+A fork of [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) that adds choosing **where traffic exits**, per node. Everything else follows upstream (synced daily).
+
+| | Upstream | This fork |
+| :--- | :--- | :--- |
+| Exit choice | One global `PROXYIP` / SOCKS5 per path | Named regions via [`REGIONS`](#-exit-regions), selected per node with `/region=jp` |
+| Exit pools | Single proxy | Several exits per region, sticky per site, 5 s failover, 60 s cooldown on a failed exit |
+| Cloudflare exits by location | ❌ | `do=<hint>` runs the tunnel in a Durable Object placed in that area |
+| Cloudflare exits by country | ❌ | `/sub?...&per_exit=1&country=sg` finds and remembers exits in that country, no config needed |
+| Stable per-exit nodes | ❌ | `per_exit=1` gives fixed node names (`JP-1`, `SG-2`, ...) that survive refreshes |
+| Releases | Download the repo zip | [GitHub releases](https://github.com/liveinaus/edgetunnel/releases/latest) with `_worker.js`, a Pages zip and `wrangler.toml` |
+| Deploy | Workers / Pages | Wrangler `--no-bundle` for full features (adds the `EXIT` Durable Object); Workers / Pages still work without `do=` and `country=` |
+
+Without `REGIONS` or the new subscription parameters, the worker behaves the same as upstream.
+
+---
+
 ## 📖 项目简介
 
 **edgetunnel** 是一个基于 CF Workers/Pages 平台的边缘计算隧道解密方案。它能够高效地处理网络流量，并提供强大的管理面板和灵活的节点配置能力。
