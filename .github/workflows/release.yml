@@ -1,0 +1,63 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - _worker.js
+      - wrangler.toml
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Package worker for Cloudflare upload
+    runs-on: ubuntu-latest
+    # Fork only, so upstream syncs don't trigger it on the original repo
+    if: ${{ github.event.repository.fork }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Package
+        id: pkg
+        run: |
+          version=$(grep -oP "const Version = '\K[^']+" _worker.js || true)
+          tag="r$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          mkdir -p dist
+          cp _worker.js wrangler.toml dist/
+          # Pages direct upload expects _worker.js at the zip root
+          (cd dist && zip -q edgetunnel-pages.zip _worker.js)
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.pkg.outputs.tag }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          Commit: ${GITHUB_SHA}
+          Worker version: ${VERSION}
+
+          | File | Use |
+          | :--- | :--- |
+          | \`_worker.js\` | Workers dashboard: Edit code, paste, Deploy |
+          | \`edgetunnel-pages.zip\` | Pages: Create deployment, upload the zip |
+          | \`wrangler.toml\` | \`wrangler deploy --no-bundle\` alongside \`_worker.js\` |
+
+          \`do=\` regions and \`country=\` exits need the \`EXIT\` Durable Object, so deploy those with wrangler (\`wrangler deploy --no-bundle\`), not Pages.
+          EOF
+
+          gh release create "$TAG" \
+            dist/_worker.js dist/edgetunnel-pages.zip dist/wrangler.toml \
+            --target "$GITHUB_SHA" \
+            --title "edgetunnel $TAG" \
+            --notes-file notes.md \
+            --latest

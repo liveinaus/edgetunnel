@@ -28,87 +28,89 @@
 
 ---
 
-## 💡 快速部署
->[!TIP]
-> 📖 **详尽图文教程**：[edgetunnel 部署指南](https://cmliussss.com/p/edt2/)
+## 💡 Deploy
+
+Every push to `main` that changes the worker publishes a [release](https://github.com/liveinaus/edgetunnel/releases/latest) with three files:
+
+| File | Use |
+| :--- | :--- |
+| [`_worker.js`](https://github.com/liveinaus/edgetunnel/releases/latest/download/_worker.js) | Workers dashboard paste, or wrangler |
+| [`edgetunnel-pages.zip`](https://github.com/liveinaus/edgetunnel/releases/latest/download/edgetunnel-pages.zip) | Pages direct upload |
+| [`wrangler.toml`](https://github.com/liveinaus/edgetunnel/releases/latest/download/wrangler.toml) | wrangler config with the `EXIT` Durable Object |
+
+Pick a method by the features you need:
+
+| Method | Proxy `REGIONS` | `do=` regions / `country=` exits |
+| :--- | :---: | :---: |
+| Wrangler (recommended) | ✅ | ✅ |
+| Workers dashboard | ✅ | ❌ |
+| Pages upload | ✅ | ❌ |
 
 >[!WARNING]
-> ⚠️ **Error 1101问题**：[视频解析](https://www.youtube.com/watch?v=r4uVTEJptdE)
+> ⚠️ **Error 1101**: always deploy with `wrangler deploy --no-bundle`. Bundling strips the trailing comment block in `_worker.js`, and a worker uploaded without it answers every request with 1101 (it stayed broken after a later `--no-bundle` deploy under the same name, so use a new name if this happens).
 
-### ⚙️ Workers 部署
+### ⚙️ Wrangler (full features)
 
 <details>
-<summary><code><strong>「 Workers 部署文字教程 」</strong></code></summary>
+<summary><code><strong>「 Wrangler deploy 」</strong></code></summary>
 
-1. 部署 CF Worker：
-   - 在 CF Worker 控制台中创建一个新的 Worker。
-   - 将 [worker.js](https://github.com/cmliu/edgetunnel/blob/main/_worker.js) 的内容粘贴到 Worker 编辑器中。
-   - 在左侧的 `设置`选项卡中，选择 `变量` > `添加变量`。
-     变量名称填写**ADMIN**，值则为你的管理员密码，后点击 `保存`即可。
+1. Get the files, either `git clone https://github.com/liveinaus/edgetunnel.git` or download `_worker.js` and `wrangler.toml` from the latest release into one folder.
 
-2. 绑定 KV 命名空间：
-   - 在 `绑定`选项卡中选择 `添加绑定 +` > `KV 命名空间` > `添加绑定`，然后选择一个已有的命名空间或创建一个新的命名空间进行绑定。
-   - `变量名称`填写**KV**，然后点击 `添加绑定`即可。
+2. Edit `wrangler.toml`:
+   - Set `name` to your worker's name.
+   - Create a KV namespace and uncomment the KV block with its id:
+     ```sh
+     npx wrangler kv namespace create KV
+     ```
+     ```toml
+     [[kv_namespaces]]
+     binding = "KV"
+     id = "<id from the command above>"
+     ```
+   - Leave the `EXIT` Durable Object binding and migration as they are.
 
-3. 给 Workers绑定 自定义域： 
-   - 在 workers控制台的 `触发器`选项卡，下方点击 `添加自定义域`。
-   - 填入你已转入 CF 域名解析服务的次级域名，例如:`vless.google.com`后 点击`添加自定义域`，等待证书生效即可。
+3. Set the admin password and deploy:
+   ```sh
+   npx wrangler secret put ADMIN
+   npx wrangler deploy --no-bundle
+   ```
+   Other variables (`REGIONS`, `PROXYIP`, ...) can be added in the dashboard under `Settings` > `Variables`; `keep_vars = true` keeps them across deploys.
 
-4. 访问后台：
-   - 访问 `https://vless.google.com/admin` 输入管理员密码即可登录后台。
+4. Bind a custom domain: in the dashboard, `Settings` > `Domains & Routes` > `Add` > `Custom domain`, for example `vless.example.com`.
+
+5. Open `https://vless.example.com/admin` and log in with the admin password.
+
+To update, download the new release files (or `git pull`) and run `npx wrangler deploy --no-bundle` again.
 
 </details>
 
-### 🛠 Pages 上传 部署方法 **最佳推荐!!!** [图文教程](https://cmliussss.com/p/edt2/)
+### ⚙️ Workers dashboard
 
 <details>
-<summary><code><strong>「 Pages 上传文件部署文字教程 」</strong></code></summary>
+<summary><code><strong>「 Workers dashboard deploy 」</strong></code></summary>
 
-1. 部署 CF Pages：
-   - 下载 [main.zip](https://github.com/cmliu/edgetunnel/archive/refs/heads/main.zip) 文件，并点上 Star !!!
-   - 在 CF Pages 控制台中选择 `上传资产`后，为你的项目取名后点击 `创建项目`，然后上传你下载好的 [main.zip](https://github.com/cmliu/edgetunnel/archive/refs/heads/main.zip) 文件后点击 `部署站点`。
-   - 部署完成后点击 `继续处理站点` 后，选择 `设置` > `环境变量` > **制作**为生产环境定义变量 > `添加变量`。
-     变量名称填写**ADMIN**，值则为你的管理员密码，后点击 `保存`即可。
-   - 返回 `部署` 选项卡，在右下角点击 `创建新部署` 后，重新上传 [main.zip](https://github.com/cmliu/edgetunnel/archive/refs/heads/main.zip) 文件后点击 `保存并部署` 即可。
+1. Create a Worker, open `Edit code`, replace the contents with the release [`_worker.js`](https://github.com/liveinaus/edgetunnel/releases/latest/download/_worker.js) and click `Deploy`.
+2. `Settings` > `Variables`: add **ADMIN** with your admin password.
+3. `Bindings` > `Add binding` > `KV namespace`: variable name **KV**, pick or create a namespace.
+4. `Settings` > `Domains & Routes`: add a custom domain, then open `https://<domain>/admin`.
 
-2. 绑定 KV 命名空间：
-   - 在 `设置`选项卡中选择 `绑定` > `+ 添加` > `KV 命名空间`，然后选择一个已有的命名空间或创建一个新的命名空间进行绑定。
-   - `变量名称`填写**KV**，然后点击 `保存`后重试部署即可。
-
-3. 给 Pages绑定 CNAME自定义域：[视频教程](https://www.youtube.com/watch?v=LeT4jQUh8ok&t=851s)
-   - 在 Pages控制台的 `自定义域`选项卡，下方点击 `设置自定义域`。
-   - 填入你的自定义次级域名，注意不要使用你的根域名，例如：
-     您分配到的域名是 `fuck.cloudns.biz`，则添加自定义域填入 `lizi.fuck.cloudns.biz`即可；
-   - 按照 CF 的要求将返回你的域名DNS服务商，添加 该自定义域 `lizi`的 CNAME记录 `edgetunnel.pages.dev` 后，点击 `激活域`即可。
-   
-4. 访问后台：
-   - 访问 `https://lizi.fuck.cloudns.biz/admin` 输入管理员密码即可登录后台。
+The editor has no Durable Object migration, so `do=` regions and `country=` exits are unavailable here. Proxy `REGIONS` work.
 
 </details>
 
-### 🛠 Pages + GitHub 部署方法
+### 🛠 Pages upload
 
 <details>
-<summary><code><strong>「 Pages + GitHub 部署文字教程 」</strong></code></summary>
+<summary><code><strong>「 Pages upload deploy 」</strong></code></summary>
 
-1. 部署 CF Pages：
-   - 在 Github 上先 Fork 本项目，并点上 Star !!!
-   - 在 CF Pages 控制台中选择 `连接到 Git`后，选中 `edgetunnel`项目后点击 `开始设置`。
-   - 在 `设置构建和部署`页面下方，选择 `环境变量（高级）`后并 `添加变量`
-     变量名称填写**ADMIN**，值则为你的管理员密码，后点击 `保存并部署`即可。
+1. Download [`edgetunnel-pages.zip`](https://github.com/liveinaus/edgetunnel/releases/latest/download/edgetunnel-pages.zip).
+2. In Pages, choose `Upload assets`, name the project, `Create project`, upload the zip and `Deploy site`.
+3. `Settings` > `Environment variables` > Production: add **ADMIN** with your admin password.
+4. `Settings` > `Bindings` > `Add` > `KV namespace`: variable name **KV**.
+5. `Deployments` > `Create new deployment`: upload the zip again so the variables and binding take effect.
+6. `Custom domains` > `Set up a custom domain`: use a subdomain (for example `lizi.example.com`) and add the CNAME to `<project>.pages.dev` it asks for. Then open `https://lizi.example.com/admin`.
 
-2. 绑定 KV 命名空间：
-   - 在 `设置`选项卡中选择 `绑定` > `+ 添加` > `KV 命名空间`，然后选择一个已有的命名空间或创建一个新的命名空间进行绑定。
-   - `变量名称`填写**KV**，然后点击 `保存`后重试部署即可。
-
-3. 给 Pages绑定 CNAME自定义域：[视频教程](https://www.youtube.com/watch?v=LeT4jQUh8ok&t=851s)
-   - 在 Pages控制台的 `自定义域`选项卡，下方点击 `设置自定义域`。
-   - 填入你的自定义次级域名，注意不要使用你的根域名，例如：
-     您分配到的域名是 `fuck.cloudns.biz`，则添加自定义域填入 `lizi.fuck.cloudns.biz`即可；
-   - 按照 CF 的要求将返回你的域名DNS服务商，添加 该自定义域 `lizi`的 CNAME记录 `edgetunnel.pages.dev` 后，点击 `激活域`即可。
-
-4. 访问后台：
-   - 访问 `https://lizi.fuck.cloudns.biz/admin` 输入管理员密码即可登录后台。
+Pages cannot define Durable Objects, so `do=` regions and `country=` exits are unavailable here. Proxy `REGIONS` work.
 
 </details>
 
@@ -155,7 +157,7 @@ Choose where each node's traffic leaves the internet from. There are three ways 
   tag = "v1"
   new_sqlite_classes = ["EXIT"]
   ```
-- **Deploy with `wrangler deploy --no-bundle`.** Bundling strips the trailing comment block in `_worker.js`, and a worker uploaded without it answered every request with error 1101 (it stayed broken after a later `--no-bundle` deploy under the same name).
+- **Deploy with `wrangler deploy --no-bundle`**, see [Deploy](#-deploy).
 - **Bind KV** (`KV`) for country exits, so found exits survive cold starts and stay the same across isolates.
 - Proxy-only `REGIONS` need neither the binding nor KV and also work on Pages.
 
