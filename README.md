@@ -21,6 +21,7 @@ A fork of [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel) that adds choo
 | Exit pools | Single proxy | Several exits per region, sticky per site, 5 s failover, 60 s cooldown on a failed exit |
 | Cloudflare exits by location | ❌ | `do=<hint>` runs the tunnel in a Durable Object placed in that area |
 | Cloudflare exits by country | ❌ | `/sub?...&per_exit=1&country=sg` finds and remembers exits in that country, no config needed |
+| One IP per node | ❌ | `&unique=1` keeps only exits with distinct IPs, and node names show each exit's IP |
 | Stable per-exit nodes | ❌ | `per_exit=1` gives fixed node names (`JP-1`, `SG-2`, ...) that survive refreshes |
 | Releases | Download the repo zip | [GitHub releases](https://github.com/liveinaus/edgetunnel/releases/latest) with `_worker.js`, a Pages zip and `wrangler.toml` |
 | Deploy | Workers / Pages | Wrangler `--no-bundle` for full features (adds the `EXIT` Durable Object); Workers / Pages still work without `do=` and `country=` |
@@ -99,6 +100,13 @@ Pick a method by the features you need:
 5. Open `https://vless.example.com/admin` and log in with the admin password.
 
 To update, download the new release files (or `git pull`) and run `npx wrangler deploy --no-bundle` again.
+
+**Updating a worker without its wrangler.toml** (for example one of several accounts): `scripts/deploy.mjs` builds the config for you, reads the KV namespaces the live worker has bound and keeps them, then deploys with `--no-bundle`. Secrets and variables are kept.
+```sh
+npx wrangler login                      # or set CLOUDFLARE_API_TOKEN
+node scripts/deploy.mjs --name edt      # --account <id> if the login sees several, --kv <id> to bind one, --dry-run to check
+```
+For several accounts, give each its own login with `XDG_CONFIG_HOME=<dir>` on both commands.
 
 </details>
 
@@ -195,12 +203,15 @@ It returns nodes named `SG-1`, `SG-2`, ... that exit from Cloudflare's IPs in th
 | `country` | | ISO 3166 two-letter codes, comma separated | Countries to build nodes for |
 | `count` | `3` | 1-10 | Nodes per country |
 | `ips` | `1` | 1-5 | Exits behind each node; if one does not answer, the next takes over |
+| `unique` | | `1` | Only exits with distinct IPs, so no two nodes share one. Small countries give fewer nodes |
 
 How it works: the worker creates EXIT objects under the location hints that reach the country, asks each one where its connections appear from, keeps the ones that land in the country, and saves them in KV under `cf-exit:<country>`. The first request for a country takes a few seconds; later ones are instant.
 
 - Countries found so far: US, GB, FR, NL, ES, PT, DE, AT, CZ, IT, PL, RO, SE, SG, HK, JP, KR, AU. Other codes try every hint.
 - A country with no Cloudflare exit (TW, for instance) answers `503`. A rarer country can come back short of `count`; requesting the subscription again carries the search on.
-- Each node's path is `/country=<code>.<n>` (or `.<n>x<ips>`), for example `/country=sg.2x3` is node 2 of Singapore backed by 3 exits. A plain `/country=sg` picks a random known exit.
+- Each node's path is `/country=<code>.<n>` (or `.<n>x<ips>`), for example `/country=sg.2x3` is node 2 of Singapore backed by 3 exits. A plain `/country=sg` picks a random known exit. With `unique=1` the path ends in `u` (`/country=sg.2u`).
+- An exit keeps the same IP for as long as it exists, and with `ips=1` the node name shows it (`SG-2 104.28.163.230`). Several exits in one country can share an IP, since a country has only a few Cloudflare locations; `unique=1` skips the repeats and keeps searching. Exits found before this version get their IP the first time `unique=1` is requested.
+- Cloudflare's exit IPs in a country are shared by every account, so separate workers find overlapping IPs. Remove duplicates across workers on the client side if that matters.
 - Failover between `ips` exits only happens when the WebSocket upgrade fails; a POST-based transport stays on the first exit.
 
 #### 2. Proxy regions (REGIONS)
